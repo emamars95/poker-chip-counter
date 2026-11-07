@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f3d2e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Poker Chip Counter</title>
+<style>
+:root{--bg:#0f3d2e;--card:#14513c;--deep:#0c3324;--ink:#f3f1e8;--muted:#b9c9bf;--line:#2a6b52;--accent:#f2c14e;--pos:#7ee08a;--neg:#ff8a80}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:960px;margin:0 auto;padding:16px}
+h1{font-size:1.4rem;margin:6px 0 14px}
+h2{font-size:1.05rem;margin:0 0 10px;color:var(--accent)}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px}
+input{background:var(--deep);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;width:100%}
+button{font:inherit;border:0;border-radius:8px;padding:8px 12px;cursor:pointer;background:var(--accent);color:#222;font-weight:600}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button.x{background:transparent;color:var(--neg);padding:4px 8px}
+button.big{width:100%;padding:14px;font-size:1.1rem}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.muted{color:var(--muted)}
+.chip{width:26px;height:26px;border-radius:50%;border:3px dashed rgba(255,255,255,.75);flex:none;display:inline-block}
+table{width:100%;border-collapse:collapse}
+td,th{padding:6px 4px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
+th{color:var(--muted);font-weight:500;font-size:.9rem}
+.num{text-align:right}
+.pos{color:var(--pos)}.neg{color:var(--neg)}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.pot{font-size:2.2rem;font-weight:800;color:var(--accent);line-height:1}
+.code{font-size:1.6rem;font-weight:800;letter-spacing:.2em;color:var(--accent)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--neg)}
+.dot.on{background:var(--pos)}
+.players{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
+.pl{background:var(--deep);border:2px solid var(--line);border-radius:12px;padding:12px}
+.pl.me{border-color:#5fb3ff}
+.pl.folded{opacity:.45}
+.pl.win{border-color:var(--accent)}
+.pl .name{font-weight:700;font-size:1.05rem}
+.pl .nums{display:flex;gap:14px;margin:6px 0 10px}
+.pl .nums b{font-size:1.2rem}
+.bets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.cb{display:flex;align-items:center;gap:6px;background:#174a37;color:var(--ink);border:1px solid var(--line);padding:8px 10px}
+.cb .chip{width:20px;height:20px;border-width:2px}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+.acts button{padding:7px 10px;font-size:.9rem}
+.winbtn{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+.winbtn.on{background:var(--accent);color:#222}
+.badge{font-size:.75rem;background:var(--neg);color:#222;border-radius:6px;padding:1px 6px;margin-left:6px}
+.badge.me{background:#5fb3ff}
+.badge.all{background:var(--accent)}
+.log{max-height:220px;overflow:auto;font-size:.92rem}
+.log div{padding:4px 0;border-bottom:1px solid var(--line)}
+.ok{color:var(--pos)}.warn{color:var(--neg)}
+.err{background:#5a1f1f;border:1px solid var(--neg);border-radius:10px;padding:10px;margin-bottom:12px}
+.pick{display:grid;gap:8px}
+.pick button{text-align:left}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#000c;color:#fff;padding:10px 16px;border-radius:10px;font-size:.95rem}
+</style>
+</head>
+<body>
+<main>
+<h1>♠ Poker Chip Counter</h1>
+<div id="app"></div>
+</main>
+<div id="toast" class="toast" hidden></div>
+
+<script>
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const fmt = n => (Math.round(n*100)/100).toLocaleString('it-IT');
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ls = {
+  get(k, d){ try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch(e){ return d; } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
+};
+const freshSetup = () => ({
+  chips: [
+    {name:'Bianca', color:'#ffffff', value:1},
+    {name:'Rossa', color:'#d32f2f', value:5},
+    {name:'Verde', color:'#2e7d32', value:25},
+    {name:'Nera', color:'#212121', value:100}
+  ],
+  start: [20, 10, 4, 1],
+  players: [{name:''},{name:''},{name:''},{name:''}]
+});
+
+let screen = 'home';          // home | setup | game
+let setup = ls.get('pcc-setup', null) || freshSetup();
+let room = null, ws = null, conn = false, S = null, canUndo = false, me = null;
+let pendingCreate = null, err = '', retry = 0, retryTimer = null;
+
+const startValue = () => setup.chips.reduce((s,c,i) => s + (+setup.start[i]||0)*(+c.value||0), 0);
+const pot = () => S ? S.players.reduce((s,p) => s + p.bet, 0) : 0;
+const genCode = () => Array.from({length:4}, () => CODE_CHARS[Math.floor(Math.random()*CODE_CHARS.length)]).join('');
+const shareUrl = () => location.origin + location.pathname + '?room=' + room;
+
+function toast(t){ const el = document.getElementById('toast'); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(()=>el.hidden = true, 2200); }
+
+/* ---------- CONNECTION ---------- */
+function connect(code){
+  room = code; me = ls.get('pcc-me-' + code, null);
+  history.replaceState(null, '', '?room=' + code);
+  screen = 'game'; S = null; err = '';
+  open();
+  render();
+}
+function open(){
+  clearTimeout(retryTimer);
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const sock = new WebSocket(`${proto}//${location.host}/ws?room=${room}`);
+  ws = sock;
+  sock.onopen = () => {
+    conn = true; retry = 0;
+    if (pendingCreate) sock.send(JSON.stringify({type:'create', state: pendingCreate}));
+    render();
+  };
+  sock.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch(e){ return; }
+    if (m.type === 'state') {
+      if (m.state) pendingCreate = null;
+      S = m.state; canUndo = m.canUndo;
+      if (me && me !== '*' && S && !S.players.some(p => p.name === me)) me = null;
+      render();
+    } else if (m.type === 'error') {
+      if (m.code === 'exists' && pendingCreate) {   // code collision: pick another
+        const st = pendingCreate; leave(true); pendingCreate = st; connect(genCode());
+      } else if (m.code === 'invalid') { err = 'Configurazione non valida.'; pendingCreate = null; render(); }
+    }
+  };
+  sock.onclose = () => {
+    if (ws !== sock) return;
+    conn = false; render();
+    retryTimer = setTimeout(open, Math.min(10000, 500 * 2 ** retry++));
+  };
+}
+function leave(silent){
+  clearTimeout(retryTimer);
+  if (ws) { const s = ws; ws = null; s.onclose = null; try { s.close(); } catch(e){} }
+  room = null; S = null; conn = false; me = null; pendingCreate = null;
+  history.replaceState(null, '', location.pathname);
+  if (!silent) { screen = 'home'; render(); }
+}
+function send(action){
+  if (!ws || ws.readyState !== 1) { toast('Non connesso, riprovo…'); return; }
+  ws.send(JSON.stringify({type:'action', action}));
+}
+function setMe(v){ me = v; ls.set('pcc-me-' + room, v); render(); }
+
+/* ---------- VIEWS ---------- */
+function render(){
+  const app = document.getElementById('app');
+  app.innerHTML = screen === 'home' ? homeView() : screen === 'setup' ? setupView() : gameView();
+}
+
+function homeView(){
+  return `
+  ${err ? `<div class="err">${esc(err)}</div>` : ''}
+  <section>
+    <h2>Nuova partita</h2>
+    <p class="muted" style="margin-top:0">Imposta chip e giocatori: riceverai un codice da condividere con gli amici.</p>
+    <button class="big" data-act="goSetup">＋ Crea partita</button>
+  </section>
+  <section>
+    <h2>Entra in una partita</h2>
+    <div class="row">
+      <input id="joinCode" placeholder="Codice (es. K7QX)" maxlength="8" autocapitalize="characters" autocomplete="off" style="flex:1;text-transform:uppercase;letter-spacing:.15em;font-weight:700">
+      <button data-act="join">Entra</button>
+    </div>
+  </section>`;
+}
+
+function setupView(){
+  return `
+  ${err ? `<div class="err">${esc(err)}</div>` : ''}
+  <section>
+    <h2>1 · Chip e distribuzione iniziale</h2>
+    <table>
+      <thead><tr><th></th><th>Nome</th><th>Valore</th><th>Chip a testa</th><th></th></tr></thead>
+      <tbody>
+      ${setup.chips.map((c,i)=>`
+        <tr>
+          <td><input type="color" value="${esc(c.color)}" data-chip="${i}" data-f="color" style="width:44px;height:36px;padding:2px"></td>
+          <td><input type="text" value="${esc(c.name)}" data-chip="${i}" data-f="name"></td>
+          <td><input type="number" min="0" step="any" value="${c.value}" data-chip="${i}" data-f="value" style="width:84px"></td>
+          <td><input type="number" min="0" value="${setup.start[i]||0}" data-start="${i}" style="width:76px"></td>
+          <td><button class="x" data-act="delChip" data-i="${i}">✕</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost" data-act="addChip">+ Aggiungi chip</button>
+      <span class="muted">Stack iniziale: <b id="sv" style="color:var(--ink)">${fmt(startValue())}</b></span>
+    </div>
+  </section>
+  <section>
+    <h2>2 · Giocatori</h2>
+    <p class="muted" style="margin-top:0;font-size:.9rem">Puoi lasciarne qualcuno vuoto: chi entra col codice potrà aggiungersi da solo.</p>
+    ${setup.players.map((p,i)=>`
+      <div class="row">
+        <input type="text" value="${esc(p.name)}" placeholder="Nome giocatore ${i+1}" data-pname="${i}" style="flex:1" maxlength="24">
+        <button class="x" data-act="delPlayer" data-i="${i}">✕</button>
+      </div>`).join('')}
+    <button class="ghost" data-act="addPlayer">+ Aggiungi giocatore</button>
+  </section>
+  <div class="row">
+    <button class="ghost" data-act="home">← Indietro</button>
+    <button data-act="create" style="flex:1;padding:14px;font-size:1.05rem" id="createBtn" ${canCreate()?'':'disabled'}>▶ Crea partita e distribuisci</button>
+  </div>`;
+}
+function canCreate(){ return startValue() > 0 && setup.players.some(p => p.name.trim()); }
+
+function gameView(){
+  const head = `
+  <section>
+    <div class="top">
+      <div>
+        <div class="muted" style="font-size:.85rem"><span class="dot ${conn?'on':''}"></span>${conn?'Connesso':'Riconnessione…'} · Codice partita</div>
+        <div class="code">${esc(room)}</div>
+      </div>
+      <div class="acts">
+        <button class="ghost" data-act="share">📤 Invita</button>
+        <button class="ghost" data-act="leave">Esci</button>
+      </div>
+    </div>
+  </section>`;
+
+  if (!S) {
+    return head + `<section><p class="muted" style="margin:0">${conn ? (pendingCreate ? 'Creo la partita…' : 'Nessuna partita con questo codice. Controlla il codice o creane una nuova.') : 'Connessione in corso…'}</p></section>`;
+  }
+
+  if (!me) return head + pickView();
+
+  const P = pot();
+  const winners = S.players.filter(p => p.win).length;
+  const order = S.players.map((p,i)=>({p,i})).sort((a,b)=>(b.p.name===me)-(a.p.name===me));
+  const totalBuy = S.players.reduce((s,p)=>s+p.buyin,0);
+  const totalNow = S.players.reduce((s,p)=>s+p.stack+p.bet,0);
+  const maxBet = Math.max(0, ...S.players.map(p=>p.bet));
+
+  return head + `
+  <section>
+    <div class="top">
+      <div><div class="muted">Mano #${S.hand} · Piatto</div><div class="pot">${fmt(P)}</div></div>
+      <div class="acts">
+        <button class="ghost" data-act="undo" ${canUndo?'':'disabled'}>↶ Annulla</button>
+        <button class="ghost" data-act="clearBets" ${P?'':'disabled'}>Restituisci puntate</button>
+      </div>
+    </div>
+    <div class="muted" style="font-size:.85rem;margin-top:8px">Sei: <b style="color:var(--ink)">${me==='*'?'Banco (controlli tutti)':esc(me)}</b> · <a href="#" data-act="changeMe" style="color:var(--accent)">cambia</a></div>
+  </section>
+
+  <div class="players">
+  ${order.map(({p,i})=>{
+    const mine = me === '*' || p.name === me;
+    const call = Math.min(maxBet - p.bet, p.stack);
+    return `
+    <div class="pl ${p.name===me?'me':''} ${p.folded?'folded':''} ${p.win?'win':''}">
+      <div class="name">${esc(p.name)}${p.name===me?'<span class="badge me">TU</span>':''}${p.folded?'<span class="badge">PASSA</span>':''}${p.stack===0&&p.bet>0?'<span class="badge all">ALL-IN</span>':''}</div>
+      <div class="nums">
+        <span class="muted">Stack <b style="color:var(--ink)">${fmt(p.stack)}</b></span>
+        <span class="muted">Puntata <b style="color:var(--accent)">${fmt(p.bet)}</b></span>
+      </div>
+      ${mine ? `
+      <div class="bets">
+        ${S.chips.map(c=>`
+          <button class="cb" data-act="bet" data-i="${i}" data-v="${c.value}" ${p.folded||p.stack<c.value?'disabled':''}>
+            <span class="chip" style="background:${esc(c.color)}"></span>+${fmt(c.value)}
+          </button>`).join('')}
+      </div>
+      <div class="acts" style="margin-bottom:6px">
+        <button class="ghost" data-act="call" data-i="${i}" ${p.folded||call<=0?'disabled':''}>Vedo ${call>0?fmt(call):''}</button>
+        <button class="ghost" data-act="allin" data-i="${i}" ${p.folded||p.stack<=0?'disabled':''}>All-in</button>
+        <button class="ghost" data-act="fold" data-i="${i}">${p.folded?'Rientra':'Passa'}</button>
+        <button class="ghost" data-act="rebuy" data-i="${i}">+ Ricarica</button>
+      </div>` : ''}
+      <div class="acts">
+        <button class="winbtn ${p.win?'on':''}" data-act="win" data-i="${i}" ${p.folded?'disabled':''}>🏆 Vince</button>
+      </div>
+    </div>`;}).join('')}
+  </div>
+
+  <section style="margin-top:14px">
+    <button class="big" data-act="award" ${P>0&&winners>0?'':'disabled'}>
+      ${winners>1?`Dividi il piatto (${fmt(P)}) tra ${winners} vincitori`:winners===1?`Assegna il piatto (${fmt(P)}) al vincitore`:'Seleziona il vincitore (🏆) per chiudere la mano'}
+    </button>
+  </section>
+
+  <section>
+    <h2>Classifica</h2>
+    <table>
+      <thead><tr><th>Giocatore</th><th class="num">Comprato</th><th class="num">Stack</th><th class="num">+/−</th></tr></thead>
+      <tbody>
+      ${S.players.map(p=>({...p,tot:p.stack+p.bet})).sort((a,b)=>(b.tot-b.buyin)-(a.tot-a.buyin)).map(p=>{
+        const net = p.tot - p.buyin;
+        return `<tr><td>${esc(p.name)}</td><td class="num">${fmt(p.buyin)}</td><td class="num">${fmt(p.tot)}</td>
+          <td class="num ${net>0?'pos':net<0?'neg':''}">${net>0?'+':''}${fmt(net)}</td></tr>`;}).join('')}
+      </tbody>
+    </table>
+    <div class="${Math.abs(totalNow-totalBuy)<0.005?'ok':'warn'}" style="margin-top:8px;font-size:.9rem">
+      Chip in gioco: ${fmt(totalNow)} su ${fmt(totalBuy)} distribuite ${Math.abs(totalNow-totalBuy)<0.005?'✓':'⚠'}
+    </div>
+  </section>
+
+  ${S.history.length?`
+  <section>
+    <h2>Storico mani</h2>
+    <div class="log">${S.history.slice().reverse().map(h=>`<div><b>Mano #${h.hand}</b> · piatto ${fmt(h.pot)} → ${h.result.map(r=>`${esc(r.name)} +${fmt(r.amount)}`).join(', ')}</div>`).join('')}</div>
+  </section>`:''}`;
+}
+
+function pickView(){
+  return `
+  <section>
+    <h2>Chi sei?</h2>
+    <div class="pick">
+      ${S.players.map(p=>`<button class="ghost" data-act="pickMe" data-name="${esc(p.name)}">🙋 ${esc(p.name)} <span class="muted">· stack ${fmt(p.stack)}</span></button>`).join('')}
+    </div>
+    <div class="row" style="margin-top:14px">
+      <input id="newName" placeholder="Non ci sei? Scrivi il tuo nome" maxlength="24" style="flex:1">
+      <button data-act="joinAs">Mi aggiungo</button>
+    </div>
+    <button class="ghost" data-act="pickMe" data-name="*" style="width:100%;margin-top:6px">🎲 Sono il banco (controllo tutti i giocatori)</button>
+  </section>`;
+}
+
+/* ---------- EVENTS ---------- */
+const A = {
+  goSetup(){ err=''; screen='setup'; },
+  home(){ err=''; screen='home'; },
+  addChip(){ setup.chips.push({name:'Chip', color:'#1565c0', value:1}); setup.start.push(0); },
+  delChip(i){ setup.chips.splice(i,1); setup.start.splice(i,1); },
+  addPlayer(){ setup.players.push({name:''}); },
+  delPlayer(i){ setup.players.splice(i,1); },
+  create(){
+    if (!canCreate()) return false;
+    const names = setup.players.map(p=>p.name.trim()).filter(Boolean);
+    if (new Set(names.map(n=>n.toLowerCase())).size !== names.length) { err = 'Due giocatori hanno lo stesso nome.'; return; }
+    pendingCreate = { chips: setup.chips, start: setup.start, players: names.map(name=>({name})) };
+    connect(genCode());
+    return false;
+  },
+  join(){
+    const code = (document.getElementById('joinCode').value||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+    if (code.length < 4) { toast('Inserisci il codice della partita'); return false; }
+    connect(code); return false;
+  },
+  leave(){ leave(); return false; },
+  share(){
+    const url = shareUrl();
+    if (navigator.share) navigator.share({title:'Partita di poker', text:`Entra nella partita ${room}`, url}).catch(()=>{});
+    else if (navigator.clipboard) navigator.clipboard.writeText(url).then(()=>toast('Link copiato!'), ()=>toast(url));
+    else toast(url);
+    return false;
+  },
+  pickMe(i, el){ setMe(el.dataset.name); return false; },
+  changeMe(){ setMe(null); return false; },
+  joinAs(){
+    const n = (document.getElementById('newName').value||'').trim();
+    if (!n) { toast('Scrivi il tuo nome'); return false; }
+    if (S.players.some(p=>p.name.toLowerCase()===n.toLowerCase())) { setMe(S.players.find(p=>p.name.toLowerCase()===n.toLowerCase()).name); return false; }
+    send({t:'addPlayer', name:n}); setMe(n); return false;
+  },
+  bet(i, el){ send({t:'bet', i, v:+el.dataset.v}); return false; },
+  call(i){ send({t:'call', i}); return false; },
+  allin(i){ send({t:'allin', i}); return false; },
+  fold(i){ send({t:'fold', i}); return false; },
+  win(i){ send({t:'win', i}); return false; },
+  rebuy(i){ if (confirm(`Aggiungere ${fmt(S.startValue)} allo stack di ${S.players[i].name}?`)) send({t:'rebuy', i}); return false; },
+  clearBets(){ send({t:'clearBets'}); return false; },
+  award(){ send({t:'award'}); return false; },
+  undo(){ send({t:'undo'}); return false; }
+};
+
+document.addEventListener('click', e=>{
+  const b = e.target.closest('[data-act]'); if (!b || b.disabled) return;
+  e.preventDefault();
+  const r = A[b.dataset.act](b.dataset.i !== undefined ? +b.dataset.i : undefined, b);
+  if (screen === 'setup') ls.set('pcc-setup', setup);
+  if (r !== false) render();
+});
+document.addEventListener('keydown', e=>{
+  if (e.key !== 'Enter') return;
+  if (e.target.id === 'joinCode') A.join();
+  if (e.target.id === 'newName') A.joinAs();
+});
+document.addEventListener('input', e=>{
+  const t = e.target, d = t.dataset;
+  if (d.chip !== undefined) setup.chips[d.chip][d.f] = d.f === 'value' ? Number(t.value) : t.value;
+  else if (d.start !== undefined) setup.start[d.start] = Math.max(0, parseInt(t.value)||0);
+  else if (d.pname !== undefined) setup.players[d.pname].name = t.value;
+  else return;
+  ls.set('pcc-setup', setup);
+  const sv = document.getElementById('sv'); if (sv) sv.textContent = fmt(startValue());
+  const cb = document.getElementById('createBtn'); if (cb) cb.disabled = !canCreate();
+});
+
+const qRoom = new URLSearchParams(location.search).get('room');
+if (qRoom) connect(qRoom.toUpperCase().replace(/[^A-Z0-9]/g,'')); else render();
+</script>
+</body>
+</html>
